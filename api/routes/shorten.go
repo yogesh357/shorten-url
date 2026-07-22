@@ -66,19 +66,35 @@ func ShortenURL(c fiber.Ctx) error {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "you cannot use this domain"})
 	}
 
+	r := database.CreateClient(0)
+	defer r.Close()
 	// enforce SSL
 	body.URL = helpers.EnforceHTTP(body.URL)
 
 	var id string
+
+	existingShort, err := r.Get(database.Ctx, "url:"+body.URL).Result()
+
+	if err == nil {
+		// URL already shortened
+		return c.Status(fiber.StatusOK).JSON(response{
+			URL:          body.URL,
+			CustomeShort: os.Getenv("DOMAIN") + "/" + existingShort,
+			Expiry:       body.Expiry,
+		})
+	}
+
+	if err != redis.Nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "unable to connect to server",
+		})
+	}
 
 	if body.CustomeShort == "" {
 		id = uuid.New().String()[:6]
 	} else {
 		id = body.CustomeShort
 	}
-
-	r := database.CreateClient(0)
-	defer r.Close()
 
 	val, _ = r.Get(database.Ctx, id).Result()
 
@@ -92,14 +108,24 @@ func ShortenURL(c fiber.Ctx) error {
 		body.Expiry = 24
 	}
 
-	// err = r.Set(database.Ctx, id, body.URL, body)
 	err = r.Set(database.Ctx, id, body.URL, body.Expiry*3600*time.Second).Err()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "unable to connect to server",
 		})
 	}
+	err = r.Set(
+		database.Ctx,
+		"url:"+body.URL,
+		id,
+		body.Expiry*3600*time.Second,
+	).Err()
 
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "unable to connect to server",
+		})
+	}
 	resp := response{
 		URL:             body.URL,
 		CustomeShort:    "",
